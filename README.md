@@ -162,7 +162,3 @@ Este projeto está sob a licença MIT. Veja o arquivo `LICENSE` para mais detalh
 ---
 
 Feito com 💚 por [Flavio Alvarenga](https://github.com/alvarengaflavio)
-
-```
-
-```
