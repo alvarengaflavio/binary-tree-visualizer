@@ -213,4 +213,23 @@ export class AVLTree {
   getNodeCount(): number {
     return this.getNodesWithDepth().length;
   }
+
+  /**
+   * Retorna o caminho percorrido durante a busca e se o valor foi encontrado.
+   */
+  searchPath(value: number): { path: number[]; found: boolean } {
+    const path: number[] = [];
+    let current = this.root;
+    while (current) {
+      path.push(current.value);
+      if (value === current.value) {
+        return { path, found: true };
+      } else if (value < current.value) {
+        current = current.left;
+      } else {
+        current = current.right;
+      }
+    }
+    return { path, found: false };
+  }
 }

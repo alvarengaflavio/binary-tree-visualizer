@@ -22,6 +22,16 @@ const traversalSequence = ref<number[]>([]);
 const activeTraversalNode = ref<number | null>(null); // valor do nó atualmente destacado
 let traversalTimer: number | null = null;
 
+// Estado da busca animada
+const searchValue = ref<number | null>(null);
+const searchActive = ref(false);
+const searchPath = ref<number[]>([]); // sequência de nós percorridos
+const searchIndex = ref(-1); // índice atual na animação (-1 = não iniciado)
+const searchFound = ref<boolean | null>(null); // resultado da busca
+const highlightedSearchNodes = ref<Set<number>>(new Set());
+const highlightedSearchEdges = ref<Set<number>>(new Set()); // childValue das arestas destacadas
+let searchTimer: number | null = null;
+
 // ========== TIPOS DE LAYOUT ==========
 interface NodePosition {
   value: number;
@@ -100,7 +110,7 @@ const svgHeight = computed(() => {
   return Math.max(Math.max(...nodes.map((n) => n.y)) + 120, 300);
 });
 
-// ========== AÇÕES ==========
+// ========== AÇÕES BÁSICAS ==========
 function showMessage(msg: string, type: "success" | "error" | "info" = "info") {
   message.value = msg;
   messageType.value = type;
@@ -167,15 +177,15 @@ function clearTree() {
   bst.value.clear();
   newNodes.value = new Set();
   removingNodes.value = new Set();
-  stopTraversal(); // interrompe percurso
+  stopAllAnimations();
   version.value++;
   showMessage("Árvore limpa!", "info");
 }
 
 function randomTree() {
   bst.value.clear();
-  stopTraversal();
-  const count = Math.floor(Math.random() * 8) + 5;
+  stopAllAnimations();
+  const count = Math.floor(Math.random() * 10) + 5;
   const values = new Set<number>();
   while (values.size < count) {
     values.add(Math.floor(Math.random() * 100) + 1);
@@ -193,15 +203,20 @@ function handleKeydown(e: KeyboardEvent) {
   if (e.key === "Enter") insertValue();
 }
 
+// ========== GERENCIAMENTO DE ANIMAÇÕES ==========
+function stopAllAnimations() {
+  stopTraversal();
+  stopSearch();
+}
+
 // ========== PERCURSO ANIMADO ==========
 function startTraversal() {
-  if (traversalActive.value) return;
+  if (traversalActive.value || searchActive.value) return;
   if (bst.value.getNodeCount() === 0) {
     showMessage("Árvore vazia!", "info");
     return;
   }
 
-  // Gera a sequência de acordo com o tipo selecionado
   let seq: number[] = [];
   switch (traversalType.value) {
     case "preorder":
@@ -223,9 +238,8 @@ function startTraversal() {
     if (index < seq.length) {
       activeTraversalNode.value = seq[index];
       index++;
-      traversalTimer = window.setTimeout(highlightNext, 800); // 800ms por nó
+      traversalTimer = window.setTimeout(highlightNext, 800);
     } else {
-      // finaliza
       activeTraversalNode.value = null;
       traversalActive.value = false;
       showMessage(`Percurso ${traversalType.value} concluído!`, "success");
@@ -243,8 +257,82 @@ function stopTraversal() {
   activeTraversalNode.value = null;
 }
 
+// ========== BUSCA ANIMADA ==========
+function startSearch() {
+  const val = searchValue.value;
+  if (!isValidNumber(val)) {
+    showMessage("Digite um valor para buscar.", "error");
+    return;
+  }
+  if (searchActive.value || traversalActive.value) {
+    showMessage("Aguarde a animação atual terminar.", "info");
+    return;
+  }
+  if (bst.value.getNodeCount() === 0) {
+    showMessage("Árvore vazia!", "info");
+    return;
+  }
+
+  const { path, found } = bst.value.searchPath(val);
+  searchPath.value = path;
+  searchFound.value = found;
+  searchActive.value = true;
+  searchIndex.value = -1;
+  highlightedSearchNodes.value = new Set();
+  highlightedSearchEdges.value = new Set();
+
+  let index = 0;
+  const step = () => {
+    if (index < path.length) {
+      // destaca o nó atual
+      const currentVal = path[index];
+      const newNodesSet = new Set(highlightedSearchNodes.value);
+      newNodesSet.add(currentVal);
+
+      // destaca aresta do pai para o nó atual (se index > 0)
+      const newEdgesSet = new Set(highlightedSearchEdges.value);
+      if (index > 0) {
+        newEdgesSet.add(currentVal); // childValue = nó atual
+      }
+
+      highlightedSearchNodes.value = newNodesSet;
+      highlightedSearchEdges.value = newEdgesSet;
+      searchIndex.value = index;
+
+      index++;
+      searchTimer = window.setTimeout(step, 700);
+    } else {
+      // final da busca
+      searchActive.value = false;
+      const msg = found
+        ? `Valor ${val} encontrado! (${path.length} iterações)`
+        : `Valor ${val} NÃO encontrado. (${path.length} iterações)`;
+      showMessage(msg, found ? "success" : "info");
+      // mantém highlights por um tempo, depois limpa
+      setTimeout(() => {
+        highlightedSearchNodes.value = new Set();
+        highlightedSearchEdges.value = new Set();
+        searchIndex.value = -1;
+      }, 1500);
+    }
+  };
+  step();
+}
+
+function stopSearch() {
+  if (searchTimer !== null) {
+    clearTimeout(searchTimer);
+    searchTimer = null;
+  }
+  searchActive.value = false;
+  highlightedSearchNodes.value = new Set();
+  highlightedSearchEdges.value = new Set();
+  searchIndex.value = -1;
+}
+
 onBeforeUnmount(() => {
   stopTraversal();
+  stopSearch();
 });
 
 // ========== HELPERS DE CLASSE ==========
@@ -256,6 +344,9 @@ function isNodeRemoving(val: number) {
 }
 function isTraversalActive(val: number) {
   return activeTraversalNode.value === val;
+}
+function isSearchHighlighted(val: number) {
+  return highlightedSearchNodes.value.has(val);
 }
 
 function getNodeAnimClass(val: number) {
@@ -270,7 +361,11 @@ function getEdgeAnimClass(childVal: number) {
   return "";
 }
 
-// Rótulo do tipo de percurso
+// Classe adicional para arestas da busca
+function isSearchEdge(childVal: number) {
+  return highlightedSearchEdges.value.has(childVal);
+}
+
 const traversalLabel = computed(() => {
   switch (traversalType.value) {
     case "preorder":
@@ -305,12 +400,33 @@ const traversalLabel = computed(() => {
         <button @click="clearTree" class="btn btn-clear">🗑️ Limpar</button>
       </div>
 
+      <!-- Busca -->
+      <div class="search-row">
+        <input
+          v-model.number="searchValue"
+          type="number"
+          placeholder="Buscar valor..."
+          class="value-input"
+          :disabled="searchActive"
+        />
+        <button
+          @click="startSearch"
+          class="btn btn-search"
+          :disabled="searchActive || traversalActive"
+        >
+          🔍 Buscar
+        </button>
+        <button v-if="searchActive" @click="stopSearch" class="btn btn-stop">
+          ⏹️ Parar
+        </button>
+      </div>
+
       <!-- Percurso -->
       <div class="traversal-controls">
         <select
           v-model="traversalType"
           class="traversal-select"
-          :disabled="traversalActive"
+          :disabled="traversalActive || searchActive"
         >
           <option value="preorder">Pré-Ordem</option>
           <option value="inorder">Em Ordem</option>
@@ -319,7 +435,7 @@ const traversalLabel = computed(() => {
         <button
           @click="startTraversal"
           class="btn btn-traverse"
-          :disabled="traversalActive"
+          :disabled="traversalActive || searchActive"
         >
           ▶️ Percorrer
         </button>
@@ -377,7 +493,11 @@ const traversalLabel = computed(() => {
           :y1="edge.y1"
           :x2="edge.x2"
           :y2="edge.y2"
-          :class="['tree-edge', getEdgeAnimClass(edge.childValue)]"
+          :class="[
+            'tree-edge',
+            getEdgeAnimClass(edge.childValue),
+            { 'edge-search': isSearchEdge(edge.childValue) },
+          ]"
         />
 
         <!-- Nós -->
@@ -395,6 +515,7 @@ const traversalLabel = computed(() => {
                 'circle-new': isNodeNew(node.value),
                 'circle-removing': isNodeRemoving(node.value),
                 'circle-traversal': isTraversalActive(node.value),
+                'circle-search': isSearchHighlighted(node.value),
               }"
             />
             <text
@@ -414,6 +535,7 @@ const traversalLabel = computed(() => {
       <span><span class="dot dot-new"></span> Novo</span>
       <span><span class="dot dot-removing"></span> Removendo</span>
       <span><span class="dot dot-traversal"></span> Percurso</span>
+      <span><span class="dot dot-search"></span> Busca</span>
       <span><span class="dot dot-normal"></span> Normal</span>
     </div>
   </div>
@@ -442,7 +564,8 @@ h2 {
 }
 .input-row,
 .btn-row,
-.traversal-controls {
+.traversal-controls,
+.search-row {
   display: flex;
   gap: 8px;
   align-items: center;
@@ -508,6 +631,10 @@ h2 {
 }
 .btn-stop {
   background: linear-gradient(135deg, #f5576c, #f093fb);
+}
+.btn-search {
+  background: linear-gradient(135deg, #f6d365, #fda085);
+  color: #4a2c2c;
 }
 
 /* Mensagem */
@@ -595,13 +722,22 @@ h2 {
   stroke: #adb5bd;
   stroke-width: 2.5;
   stroke-linecap: round;
-  transition: opacity 0.4s ease;
+  transition:
+    opacity 0.4s ease,
+    stroke 0.3s;
 }
 .tree-edge.edge-enter {
   animation: fadeIn 0.5s ease-out;
 }
 .tree-edge.edge-exit {
   animation: fadeOut 0.4s ease-in forwards;
+}
+
+/* Destaque de aresta na busca */
+.tree-edge.edge-search {
+  stroke: #f39c12;
+  stroke-width: 3.5;
+  filter: drop-shadow(0 0 4px rgba(243, 156, 18, 0.6));
 }
 
 /* Nós – posicionamento (transição suave ao reposicionar) */
@@ -641,11 +777,18 @@ h2 {
   stroke: #e74c3c;
 }
 
-/* Destaque de percurso (animação pulsante) */
+/* Destaque de percurso (pulsante) */
 .circle-traversal {
   fill: #ffd700;
   stroke: #f39c12;
   animation: pulse 0.8s infinite alternate;
+}
+
+/* Destaque de busca (cor laranja suave) */
+.circle-search {
+  fill: #fda085;
+  stroke: #e67e22;
+  filter: drop-shadow(0 0 6px rgba(230, 126, 34, 0.7));
 }
 
 @keyframes pulse {
@@ -749,6 +892,10 @@ h2 {
 .dot-traversal {
   background: #ffd700;
   border-color: #f39c12;
+}
+.dot-search {
+  background: #fda085;
+  border-color: #e67e22;
 }
 .dot-normal {
   background: #4a90d9;
