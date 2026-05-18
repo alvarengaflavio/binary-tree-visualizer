@@ -6,6 +6,8 @@ export interface NodeDepthInfo {
   parent: TreeNode | null;
 }
 
+export type TraversalType = "preorder" | "inorder" | "postorder";
+
 export class AVLTree {
   root: TreeNode | null;
 
@@ -52,7 +54,6 @@ export class AVLTree {
     return y;
   }
 
-  // Balanceia o nó após inserção/remoção
   private balance(node: TreeNode): TreeNode {
     this.updateHeight(node);
     const bf = this.getBalance(node);
@@ -146,23 +147,63 @@ export class AVLTree {
     return node;
   }
 
-  // ---------- Utilitários de visualização ----------
-  getNodesWithDepth(): NodeDepthInfo[] {
-    const result: NodeDepthInfo[] = [];
-    this._inorderTraversal(this.root, 0, null, result);
+  // ---------- Travessias (retornam array de valores) ----------
+  preorderTraversal(): number[] {
+    const result: number[] = [];
+    this._preorder(this.root, result);
     return result;
   }
 
-  private _inorderTraversal(
+  private _preorder(node: TreeNode | null, arr: number[]): void {
+    if (!node) return;
+    arr.push(node.value);
+    this._preorder(node.left, arr);
+    this._preorder(node.right, arr);
+  }
+
+  inorderTraversal(): number[] {
+    const result: number[] = [];
+    this._inorder(this.root, result);
+    return result;
+  }
+
+  private _inorder(node: TreeNode | null, arr: number[]): void {
+    if (!node) return;
+    this._inorder(node.left, arr);
+    arr.push(node.value);
+    this._inorder(node.right, arr);
+  }
+
+  postorderTraversal(): number[] {
+    const result: number[] = [];
+    this._postorder(this.root, result);
+    return result;
+  }
+
+  private _postorder(node: TreeNode | null, arr: number[]): void {
+    if (!node) return;
+    this._postorder(node.left, arr);
+    this._postorder(node.right, arr);
+    arr.push(node.value);
+  }
+
+  // ---------- Utilitários de visualização ----------
+  getNodesWithDepth(): NodeDepthInfo[] {
+    const result: NodeDepthInfo[] = [];
+    this._inorderDepth(this.root, 0, null, result);
+    return result;
+  }
+
+  private _inorderDepth(
     node: TreeNode | null,
     depth: number,
     parent: TreeNode | null,
     result: NodeDepthInfo[],
   ): void {
     if (!node) return;
-    this._inorderTraversal(node.left, depth + 1, node, result);
+    this._inorderDepth(node.left, depth + 1, node, result);
     result.push({ node, depth, parent });
-    this._inorderTraversal(node.right, depth + 1, node, result);
+    this._inorderDepth(node.right, depth + 1, node, result);
   }
 
   clear(): void {
