@@ -1,12 +1,9 @@
 <script setup lang="ts">
-import { ref, computed } from "vue";
-import {
-  BinarySearchTree,
-  type NodeDepthInfo,
-} from "../models/BinarySearchTree";
+import { computed, ref } from "vue";
+import { AVLTree, type NodeDepthInfo } from "../models/AVLTree";
 
 // ========== ESTADO ==========
-const bst = ref(new BinarySearchTree());
+const bst = ref(new AVLTree());
 const version = ref(0); // contador para forçar reatividade
 const newNodes = ref<Set<number>>(new Set()); // nós em animação de entrada
 const removingNodes = ref<Set<number>>(new Set()); // nós em animação de saída
