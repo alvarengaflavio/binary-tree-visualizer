@@ -1,6 +1,10 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
-import { AVLTree, type NodeDepthInfo } from "../models/AVLTree";
+import { ref, computed, onBeforeUnmount } from "vue";
+import {
+  AVLTree,
+  type NodeDepthInfo,
+  type TraversalType,
+} from "../models/AVLTree";
 
 // ========== ESTADO ==========
 const bst = ref(new AVLTree());
@@ -10,6 +14,13 @@ const removingNodes = ref<Set<number>>(new Set()); // nós em animação de saí
 const inputValue = ref<number | null>(null);
 const message = ref("");
 const messageType = ref<"success" | "error" | "info">("info");
+
+// Estado do percurso animado
+const traversalType = ref<TraversalType>("inorder");
+const traversalActive = ref(false);
+const traversalSequence = ref<number[]>([]);
+const activeTraversalNode = ref<number | null>(null); // valor do nó atualmente destacado
+let traversalTimer: number | null = null;
 
 // ========== TIPOS DE LAYOUT ==========
 interface NodePosition {
@@ -40,7 +51,6 @@ const layout = computed(() => {
   const MARGIN_X = 50;
   const MARGIN_Y = 50;
 
-  // Atribuir coordenadas X com base na ordem inorder
   nodesWithDepth.forEach((item: NodeDepthInfo, index: number) => {
     const x = MARGIN_X + index * H_SPACING;
     const y = MARGIN_Y + item.depth * V_SPACING;
@@ -53,7 +63,6 @@ const layout = computed(() => {
     });
   });
 
-  // Criar arestas (ligações pai → filho)
   nodesWithDepth.forEach((item: NodeDepthInfo) => {
     if (item.parent) {
       const parentPos = positions.get(item.parent.value);
@@ -158,12 +167,14 @@ function clearTree() {
   bst.value.clear();
   newNodes.value = new Set();
   removingNodes.value = new Set();
+  stopTraversal(); // interrompe percurso
   version.value++;
   showMessage("Árvore limpa!", "info");
 }
 
 function randomTree() {
   bst.value.clear();
+  stopTraversal();
   const count = Math.floor(Math.random() * 8) + 5;
   const values = new Set<number>();
   while (values.size < count) {
@@ -182,12 +193,69 @@ function handleKeydown(e: KeyboardEvent) {
   if (e.key === "Enter") insertValue();
 }
 
+// ========== PERCURSO ANIMADO ==========
+function startTraversal() {
+  if (traversalActive.value) return;
+  if (bst.value.getNodeCount() === 0) {
+    showMessage("Árvore vazia!", "info");
+    return;
+  }
+
+  // Gera a sequência de acordo com o tipo selecionado
+  let seq: number[] = [];
+  switch (traversalType.value) {
+    case "preorder":
+      seq = bst.value.preorderTraversal();
+      break;
+    case "inorder":
+      seq = bst.value.inorderTraversal();
+      break;
+    case "postorder":
+      seq = bst.value.postorderTraversal();
+      break;
+  }
+  traversalSequence.value = seq;
+  traversalActive.value = true;
+  activeTraversalNode.value = null;
+
+  let index = 0;
+  const highlightNext = () => {
+    if (index < seq.length) {
+      activeTraversalNode.value = seq[index];
+      index++;
+      traversalTimer = window.setTimeout(highlightNext, 800); // 800ms por nó
+    } else {
+      // finaliza
+      activeTraversalNode.value = null;
+      traversalActive.value = false;
+      showMessage(`Percurso ${traversalType.value} concluído!`, "success");
+    }
+  };
+  highlightNext();
+}
+
+function stopTraversal() {
+  if (traversalTimer !== null) {
+    clearTimeout(traversalTimer);
+    traversalTimer = null;
+  }
+  traversalActive.value = false;
+  activeTraversalNode.value = null;
+}
+
+onBeforeUnmount(() => {
+  stopTraversal();
+});
+
 // ========== HELPERS DE CLASSE ==========
 function isNodeNew(val: number) {
   return newNodes.value.has(val);
 }
 function isNodeRemoving(val: number) {
   return removingNodes.value.has(val);
+}
+function isTraversalActive(val: number) {
+  return activeTraversalNode.value === val;
 }
 
 function getNodeAnimClass(val: number) {
@@ -201,11 +269,23 @@ function getEdgeAnimClass(childVal: number) {
   if (newNodes.value.has(childVal)) return "edge-enter";
   return "";
 }
+
+// Rótulo do tipo de percurso
+const traversalLabel = computed(() => {
+  switch (traversalType.value) {
+    case "preorder":
+      return "Pré-Ordem";
+    case "inorder":
+      return "Em Ordem";
+    case "postorder":
+      return "Pós-Ordem";
+  }
+});
 </script>
 
 <template>
   <div class="visualizer">
-    <h2>🌳 Árvore Binária de Busca</h2>
+    <h2>🌳 Árvore AVL</h2>
 
     <!-- Controles -->
     <div class="controls">
@@ -224,11 +304,58 @@ function getEdgeAnimClass(childVal: number) {
         <button @click="randomTree" class="btn btn-random">🎲 Aleatória</button>
         <button @click="clearTree" class="btn btn-clear">🗑️ Limpar</button>
       </div>
+
+      <!-- Percurso -->
+      <div class="traversal-controls">
+        <select
+          v-model="traversalType"
+          class="traversal-select"
+          :disabled="traversalActive"
+        >
+          <option value="preorder">Pré-Ordem</option>
+          <option value="inorder">Em Ordem</option>
+          <option value="postorder">Pós-Ordem</option>
+        </select>
+        <button
+          @click="startTraversal"
+          class="btn btn-traverse"
+          :disabled="traversalActive"
+        >
+          ▶️ Percorrer
+        </button>
+        <button
+          v-if="traversalActive"
+          @click="stopTraversal"
+          class="btn btn-stop"
+        >
+          ⏹️ Parar
+        </button>
+      </div>
     </div>
 
     <!-- Feedback -->
     <div v-if="message" :class="['message', `msg-${messageType}`]">
       {{ message }}
+    </div>
+
+    <!-- Sequência de percurso -->
+    <div
+      v-if="
+        traversalActive || (traversalSequence.length > 0 && !traversalActive)
+      "
+      class="traversal-sequence"
+    >
+      <span class="seq-label">{{ traversalLabel }}:</span>
+      <span class="seq-values">
+        <span
+          v-for="(val, idx) in traversalSequence"
+          :key="idx"
+          class="seq-item"
+          :class="{ 'seq-active': val === activeTraversalNode }"
+        >
+          {{ val }}
+        </span>
+      </span>
     </div>
 
     <!-- Área da árvore -->
@@ -267,6 +394,7 @@ function getEdgeAnimClass(childVal: number) {
               :class="{
                 'circle-new': isNodeNew(node.value),
                 'circle-removing': isNodeRemoving(node.value),
+                'circle-traversal': isTraversalActive(node.value),
               }"
             />
             <text
@@ -285,6 +413,7 @@ function getEdgeAnimClass(childVal: number) {
     <div class="legend">
       <span><span class="dot dot-new"></span> Novo</span>
       <span><span class="dot dot-removing"></span> Removendo</span>
+      <span><span class="dot dot-traversal"></span> Percurso</span>
       <span><span class="dot dot-normal"></span> Normal</span>
     </div>
   </div>
@@ -312,7 +441,8 @@ h2 {
   margin-bottom: 12px;
 }
 .input-row,
-.btn-row {
+.btn-row,
+.traversal-controls {
   display: flex;
   gap: 8px;
   align-items: center;
@@ -330,6 +460,14 @@ h2 {
   border-color: #4a90d9;
 }
 
+.traversal-select {
+  padding: 10px 14px;
+  font-size: 14px;
+  border: 2px solid #ddd;
+  border-radius: 8px;
+  background: white;
+}
+
 .btn {
   padding: 10px 18px;
   font-size: 14px;
@@ -340,11 +478,15 @@ h2 {
   transition: all 0.2s;
   color: white;
 }
-.btn:hover {
+.btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.btn:hover:not(:disabled) {
   transform: translateY(-2px);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
 }
-.btn:active {
+.btn:active:not(:disabled) {
   transform: translateY(0);
 }
 .btn-insert {
@@ -359,6 +501,13 @@ h2 {
 }
 .btn-clear {
   background: linear-gradient(135deg, #f093fb, #f5576c);
+}
+.btn-traverse {
+  background: linear-gradient(135deg, #4facfe, #00f2fe);
+  color: #1a3c4a;
+}
+.btn-stop {
+  background: linear-gradient(135deg, #f5576c, #f093fb);
 }
 
 /* Mensagem */
@@ -384,6 +533,38 @@ h2 {
   background: #d1ecf1;
   color: #0c5460;
   border: 1px solid #bee5eb;
+}
+
+/* Sequência de percurso */
+.traversal-sequence {
+  text-align: center;
+  margin: 12px 0;
+  font-size: 16px;
+  color: #2c3e50;
+}
+.seq-label {
+  font-weight: 600;
+  margin-right: 8px;
+}
+.seq-values {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.seq-item {
+  background: #e9ecef;
+  padding: 4px 10px;
+  border-radius: 20px;
+  font-weight: 500;
+  transition: all 0.3s;
+  border: 2px solid transparent;
+}
+.seq-active {
+  background: #ffd700;
+  color: #000;
+  border-color: #f39c12;
+  transform: scale(1.15);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
 }
 
 /* Área da árvore */
@@ -448,7 +629,8 @@ h2 {
   stroke-width: 3;
   transition:
     fill 0.4s,
-    stroke 0.4s;
+    stroke 0.4s,
+    stroke-dasharray 0.3s;
 }
 .circle-new {
   fill: #43e97b;
@@ -457,6 +639,24 @@ h2 {
 .circle-removing {
   fill: #f5576c;
   stroke: #e74c3c;
+}
+
+/* Destaque de percurso (animação pulsante) */
+.circle-traversal {
+  fill: #ffd700;
+  stroke: #f39c12;
+  animation: pulse 0.8s infinite alternate;
+}
+
+@keyframes pulse {
+  from {
+    stroke-width: 3;
+    filter: drop-shadow(0 0 4px rgba(255, 215, 0, 0.6));
+  }
+  to {
+    stroke-width: 6;
+    filter: drop-shadow(0 0 12px rgba(255, 215, 0, 0.9));
+  }
 }
 
 /* Texto */
@@ -545,6 +745,10 @@ h2 {
 .dot-removing {
   background: #f5576c;
   border-color: #e74c3c;
+}
+.dot-traversal {
+  background: #ffd700;
+  border-color: #f39c12;
 }
 .dot-normal {
   background: #4a90d9;
