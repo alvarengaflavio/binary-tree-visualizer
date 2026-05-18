@@ -1,38 +1,50 @@
 <script setup lang="ts">
-import { ref, computed, onBeforeUnmount } from "vue";
+import { ref, computed, onBeforeUnmount, onMounted, watch } from "vue";
 import {
   AVLTree,
   type NodeDepthInfo,
   type TraversalType,
 } from "../models/AVLTree";
 
-// ========== ESTADO ==========
+// ========== ESTADO DA ÁRVORE ==========
 const bst = ref(new AVLTree());
-const version = ref(0); // contador para forçar reatividade
-const newNodes = ref<Set<number>>(new Set()); // nós em animação de entrada
-const removingNodes = ref<Set<number>>(new Set()); // nós em animação de saída
+const version = ref(0);
+const newNodes = ref<Set<number>>(new Set());
+const removingNodes = ref<Set<number>>(new Set());
 const inputValue = ref<number | null>(null);
 const message = ref("");
 const messageType = ref<"success" | "error" | "info">("info");
 
-// Estado do percurso animado
+// Percurso
 const traversalType = ref<TraversalType>("inorder");
 const traversalActive = ref(false);
 const traversalSequence = ref<number[]>([]);
-const activeTraversalNode = ref<number | null>(null); // valor do nó atualmente destacado
+const activeTraversalNode = ref<number | null>(null);
 let traversalTimer: number | null = null;
 
-// Estado da busca animada
+// Busca
 const searchValue = ref<number | null>(null);
 const searchActive = ref(false);
-const searchPath = ref<number[]>([]); // sequência de nós percorridos
-const searchIndex = ref(-1); // índice atual na animação (-1 = não iniciado)
-const searchFound = ref<boolean | null>(null); // resultado da busca
+const searchPath = ref<number[]>([]);
+const searchIndex = ref(-1);
+const searchFound = ref<boolean | null>(null);
 const highlightedSearchNodes = ref<Set<number>>(new Set());
-const highlightedSearchEdges = ref<Set<number>>(new Set()); // childValue das arestas destacadas
+const highlightedSearchEdges = ref<Set<number>>(new Set());
 let searchTimer: number | null = null;
 
-// ========== TIPOS DE LAYOUT ==========
+// ========== ZOOM & PAN ==========
+const zoomLevel = ref(1);
+const panX = ref(0);
+const panY = ref(0);
+const isPanning = ref(false);
+const lastMouseX = ref(0);
+const lastMouseY = ref(0);
+const svgContainer = ref<HTMLElement | null>(null);
+
+const minZoom = 0.2;
+const maxZoom = 5.0;
+
+// ========== LAYOUT ==========
 interface NodePosition {
   value: number;
   x: number;
@@ -40,7 +52,6 @@ interface NodePosition {
   parentValue: number | null;
   depth: number;
 }
-
 interface Edge {
   childValue: number;
   x1: number;
@@ -49,46 +60,43 @@ interface Edge {
   y2: number;
 }
 
-// ========== LAYOUT COMPUTADO ==========
 const layout = computed(() => {
-  version.value; // dependência de reatividade
+  version.value;
   const nodesWithDepth = bst.value.getNodesWithDepth();
   const positions = new Map<number, NodePosition>();
   const edges: Edge[] = [];
 
   const H_SPACING = 65;
   const V_SPACING = 80;
-  const MARGIN_X = 50;
-  const MARGIN_Y = 50;
+  const MARGIN_X = 60;
+  const MARGIN_Y = 60;
 
-  nodesWithDepth.forEach((item: NodeDepthInfo, index: number) => {
+  nodesWithDepth.forEach((item, index) => {
     const x = MARGIN_X + index * H_SPACING;
     const y = MARGIN_Y + item.depth * V_SPACING;
     positions.set(item.node.value, {
       value: item.node.value,
       x,
       y,
-      parentValue: item.parent ? item.parent.value : null,
+      parentValue: item.parent?.value ?? null,
       depth: item.depth,
     });
   });
 
-  nodesWithDepth.forEach((item: NodeDepthInfo) => {
+  nodesWithDepth.forEach((item) => {
     if (item.parent) {
-      const parentPos = positions.get(item.parent.value);
-      const childPos = positions.get(item.node.value);
-      if (parentPos && childPos) {
+      const pPos = positions.get(item.parent.value);
+      const cPos = positions.get(item.node.value);
+      if (pPos && cPos)
         edges.push({
           childValue: item.node.value,
-          x1: parentPos.x,
-          y1: parentPos.y,
-          x2: childPos.x,
-          y2: childPos.y,
+          x1: pPos.x,
+          y1: pPos.y,
+          x2: cPos.x,
+          y2: cPos.y,
         });
-      }
     }
   });
-
   return { positions, edges };
 });
 
@@ -96,21 +104,20 @@ const nodeList = computed(() => Array.from(layout.value.positions.values()));
 
 const svgViewBox = computed(() => {
   const nodes = nodeList.value;
-  if (nodes.length === 0) return "0 0 300 150";
-  const minX = Math.min(...nodes.map((n) => n.x)) - 60;
-  const maxX = Math.max(...nodes.map((n) => n.x)) + 60;
-  const minY = Math.min(...nodes.map((n) => n.y)) - 60;
-  const maxY = Math.max(...nodes.map((n) => n.y)) + 60;
-  return `${minX} ${minY} ${Math.max(maxX - minX, 300)} ${Math.max(maxY - minY, 150)}`;
+  if (nodes.length === 0) return "0 0 300 200";
+  const minX = Math.min(...nodes.map((n) => n.x)) - 80;
+  const maxX = Math.max(...nodes.map((n) => n.x)) + 80;
+  const minY = Math.min(...nodes.map((n) => n.y)) - 80;
+  const maxY = Math.max(...nodes.map((n) => n.y)) + 80;
+  return `${minX} ${minY} ${Math.max(maxX - minX, 300)} ${Math.max(maxY - minY, 200)}`;
 });
 
-const svgHeight = computed(() => {
-  const nodes = nodeList.value;
-  if (nodes.length === 0) return 200;
-  return Math.max(Math.max(...nodes.map((n) => n.y)) + 120, 300);
-});
+// Container do SVG deve ter altura definida (usaremos 500px fixos com possibilidade de redimensionamento, mas responsivo)
+const svgContainerHeight = computed(() =>
+  Math.max(400, Math.max(...nodeList.value.map((n) => n.y), 100) + 150),
+);
 
-// ========== AÇÕES BÁSICAS ==========
+// ========== AÇÕES DA ÁRVORE ==========
 function showMessage(msg: string, type: "success" | "error" | "info" = "info") {
   message.value = msg;
   messageType.value = type;
@@ -118,7 +125,6 @@ function showMessage(msg: string, type: "success" | "error" | "info" = "info") {
     message.value = "";
   }, 3000);
 }
-
 function isValidNumber(val: any): val is number {
   return (
     val !== null && val !== undefined && !isNaN(val) && Number.isFinite(val)
@@ -128,7 +134,7 @@ function isValidNumber(val: any): val is number {
 function insertValue() {
   const val = inputValue.value;
   if (!isValidNumber(val)) {
-    showMessage("Digite um valor numérico válido.", "error");
+    showMessage("Digite um valor válido.", "error");
     return;
   }
   if (!bst.value.contains(val)) {
@@ -141,7 +147,7 @@ function insertValue() {
       newNodes.value = new Set(newNodes.value);
     }, 600);
   } else {
-    showMessage(`Valor ${val} já existe na árvore!`, "error");
+    showMessage(`Valor ${val} já existe!`, "error");
   }
   inputValue.value = null;
 }
@@ -149,17 +155,17 @@ function insertValue() {
 function removeValue() {
   const val = inputValue.value;
   if (!isValidNumber(val)) {
-    showMessage("Digite um valor numérico válido.", "error");
+    showMessage("Digite um valor válido.", "error");
     return;
   }
   if (removingNodes.value.has(val)) {
-    showMessage("Aguardando a remoção atual...", "info");
+    showMessage("Aguardando...", "info");
     return;
   }
   if (bst.value.contains(val)) {
     removingNodes.value.add(val);
     removingNodes.value = new Set(removingNodes.value);
-    showMessage(`Removendo valor ${val}...`, "info");
+    showMessage(`Removendo ${val}...`, "info");
     setTimeout(() => {
       bst.value.remove(val);
       removingNodes.value.delete(val);
@@ -185,11 +191,9 @@ function clearTree() {
 function randomTree() {
   bst.value.clear();
   stopAllAnimations();
-  const count = Math.floor(Math.random() * 10) + 5;
+  const count = Math.floor(Math.random() * 22) + 10;
   const values = new Set<number>();
-  while (values.size < count) {
-    values.add(Math.floor(Math.random() * 100) + 1);
-  }
+  while (values.size < count) values.add(Math.floor(Math.random() * 127) + 1);
   values.forEach((v) => bst.value.insert(v));
   newNodes.value = new Set(values);
   version.value++;
@@ -203,51 +207,40 @@ function handleKeydown(e: KeyboardEvent) {
   if (e.key === "Enter") insertValue();
 }
 
-// ========== GERENCIAMENTO DE ANIMAÇÕES ==========
 function stopAllAnimations() {
   stopTraversal();
   stopSearch();
 }
 
-// ========== PERCURSO ANIMADO ==========
+// Percurso
 function startTraversal() {
   if (traversalActive.value || searchActive.value) return;
   if (bst.value.getNodeCount() === 0) {
     showMessage("Árvore vazia!", "info");
     return;
   }
-
   let seq: number[] = [];
-  switch (traversalType.value) {
-    case "preorder":
-      seq = bst.value.preorderTraversal();
-      break;
-    case "inorder":
-      seq = bst.value.inorderTraversal();
-      break;
-    case "postorder":
-      seq = bst.value.postorderTraversal();
-      break;
-  }
+  if (traversalType.value === "preorder") seq = bst.value.preorderTraversal();
+  else if (traversalType.value === "inorder")
+    seq = bst.value.inorderTraversal();
+  else seq = bst.value.postorderTraversal();
   traversalSequence.value = seq;
   traversalActive.value = true;
   activeTraversalNode.value = null;
-
   let index = 0;
-  const highlightNext = () => {
+  const highlight = () => {
     if (index < seq.length) {
       activeTraversalNode.value = seq[index];
       index++;
-      traversalTimer = window.setTimeout(highlightNext, 800);
+      traversalTimer = window.setTimeout(highlight, 800);
     } else {
       activeTraversalNode.value = null;
       traversalActive.value = false;
       showMessage(`Percurso ${traversalType.value} concluído!`, "success");
     }
   };
-  highlightNext();
+  highlight();
 }
-
 function stopTraversal() {
   if (traversalTimer !== null) {
     clearTimeout(traversalTimer);
@@ -257,7 +250,7 @@ function stopTraversal() {
   activeTraversalNode.value = null;
 }
 
-// ========== BUSCA ANIMADA ==========
+// Busca
 function startSearch() {
   const val = searchValue.value;
   if (!isValidNumber(val)) {
@@ -265,14 +258,13 @@ function startSearch() {
     return;
   }
   if (searchActive.value || traversalActive.value) {
-    showMessage("Aguarde a animação atual terminar.", "info");
+    showMessage("Aguarde...", "info");
     return;
   }
   if (bst.value.getNodeCount() === 0) {
     showMessage("Árvore vazia!", "info");
     return;
   }
-
   const { path, found } = bst.value.searchPath(val);
   searchPath.value = path;
   searchFound.value = found;
@@ -280,35 +272,25 @@ function startSearch() {
   searchIndex.value = -1;
   highlightedSearchNodes.value = new Set();
   highlightedSearchEdges.value = new Set();
-
   let index = 0;
   const step = () => {
     if (index < path.length) {
-      // destaca o nó atual
-      const currentVal = path[index];
-      const newNodesSet = new Set(highlightedSearchNodes.value);
-      newNodesSet.add(currentVal);
-
-      // destaca aresta do pai para o nó atual (se index > 0)
-      const newEdgesSet = new Set(highlightedSearchEdges.value);
-      if (index > 0) {
-        newEdgesSet.add(currentVal); // childValue = nó atual
-      }
-
-      highlightedSearchNodes.value = newNodesSet;
-      highlightedSearchEdges.value = newEdgesSet;
+      const cur = path[index];
+      const ns = new Set(highlightedSearchNodes.value);
+      ns.add(cur);
+      const es = new Set(highlightedSearchEdges.value);
+      if (index > 0) es.add(cur);
+      highlightedSearchNodes.value = ns;
+      highlightedSearchEdges.value = es;
       searchIndex.value = index;
-
       index++;
       searchTimer = window.setTimeout(step, 700);
     } else {
-      // final da busca
       searchActive.value = false;
       const msg = found
         ? `Valor ${val} encontrado! (${path.length} iterações)`
         : `Valor ${val} NÃO encontrado. (${path.length} iterações)`;
       showMessage(msg, found ? "success" : "info");
-      // mantém highlights por um tempo, depois limpa
       setTimeout(() => {
         highlightedSearchNodes.value = new Set();
         highlightedSearchEdges.value = new Set();
@@ -318,7 +300,6 @@ function startSearch() {
   };
   step();
 }
-
 function stopSearch() {
   if (searchTimer !== null) {
     clearTimeout(searchTimer);
@@ -330,65 +311,108 @@ function stopSearch() {
   searchIndex.value = -1;
 }
 
+// ========== ZOOM & PAN handlers ==========
+function zoomIn() {
+  zoomLevel.value = Math.min(maxZoom, zoomLevel.value * 1.3);
+}
+function zoomOut() {
+  zoomLevel.value = Math.max(minZoom, zoomLevel.value / 1.3);
+}
+function resetZoom() {
+  zoomLevel.value = 1;
+  panX.value = 0;
+  panY.value = 0;
+}
+
+function onWheel(e: WheelEvent) {
+  e.preventDefault();
+  const container = svgContainer.value;
+  if (!container) return;
+  const rect = container.getBoundingClientRect();
+  const mouseX = e.clientX - rect.left;
+  const mouseY = e.clientY - rect.top;
+
+  const delta = e.deltaY > 0 ? 0.9 : 1.1;
+  const newZoom = Math.min(maxZoom, Math.max(minZoom, zoomLevel.value * delta));
+  const zoomRatio = newZoom / zoomLevel.value;
+
+  // Ajusta pan para manter o ponto do mouse fixo
+  panX.value = mouseX - zoomRatio * (mouseX - panX.value);
+  panY.value = mouseY - zoomRatio * (mouseY - panY.value);
+  zoomLevel.value = newZoom;
+}
+
+function onMouseDown(e: MouseEvent) {
+  // Inicia pan se clicar no fundo do SVG (não em um nó)
+  if ((e.target as HTMLElement).closest(".node-position, .tree-edge")) return;
+  isPanning.value = true;
+  lastMouseX.value = e.clientX;
+  lastMouseY.value = e.clientY;
+  e.preventDefault();
+}
+
+function onMouseMove(e: MouseEvent) {
+  if (!isPanning.value) return;
+  const dx = e.clientX - lastMouseX.value;
+  const dy = e.clientY - lastMouseY.value;
+  panX.value += dx;
+  panY.value += dy;
+  lastMouseX.value = e.clientX;
+  lastMouseY.value = e.clientY;
+}
+
+function onMouseUp() {
+  isPanning.value = false;
+}
+
+onMounted(() => {
+  window.addEventListener("mouseup", onMouseUp);
+  window.addEventListener("mousemove", onMouseMove);
+});
 onBeforeUnmount(() => {
+  window.removeEventListener("mouseup", onMouseUp);
+  window.removeEventListener("mousemove", onMouseMove);
   stopTraversal();
   stopSearch();
 });
 
 // ========== HELPERS DE CLASSE ==========
-function isNodeNew(val: number) {
-  return newNodes.value.has(val);
-}
-function isNodeRemoving(val: number) {
-  return removingNodes.value.has(val);
-}
-function isTraversalActive(val: number) {
-  return activeTraversalNode.value === val;
-}
-function isSearchHighlighted(val: number) {
-  return highlightedSearchNodes.value.has(val);
-}
+const isNodeNew = (v: number) => newNodes.value.has(v);
+const isNodeRemoving = (v: number) => removingNodes.value.has(v);
+const isTraversalActiveNode = (v: number) => activeTraversalNode.value === v;
+const isSearchHighlightedNode = (v: number) =>
+  highlightedSearchNodes.value.has(v);
+const isSearchEdge = (v: number) => highlightedSearchEdges.value.has(v);
 
-function getNodeAnimClass(val: number) {
-  if (isNodeRemoving(val)) return "node-exit";
-  if (isNodeNew(val)) return "node-enter";
+function nodeAnimClass(v: number) {
+  if (isNodeRemoving(v)) return "node-exit";
+  if (isNodeNew(v)) return "node-enter";
+  return "";
+}
+function edgeAnimClass(v: number) {
+  if (removingNodes.value.has(v)) return "edge-exit";
+  if (newNodes.value.has(v)) return "edge-enter";
   return "";
 }
 
-function getEdgeAnimClass(childVal: number) {
-  if (removingNodes.value.has(childVal)) return "edge-exit";
-  if (newNodes.value.has(childVal)) return "edge-enter";
-  return "";
-}
-
-// Classe adicional para arestas da busca
-function isSearchEdge(childVal: number) {
-  return highlightedSearchEdges.value.has(childVal);
-}
-
-const traversalLabel = computed(() => {
-  switch (traversalType.value) {
-    case "preorder":
-      return "Pré-Ordem";
-    case "inorder":
-      return "Em Ordem";
-    case "postorder":
-      return "Pós-Ordem";
-  }
-});
+const traversalLabel = computed(
+  () =>
+    ({ preorder: "Pré-Ordem", inorder: "Em Ordem", postorder: "Pós-Ordem" })[
+      traversalType.value
+    ],
+);
 </script>
 
 <template>
   <div class="visualizer">
     <h2>🌳 Árvore AVL</h2>
 
-    <!-- Controles -->
     <div class="controls">
       <div class="input-row">
         <input
           v-model.number="inputValue"
           type="number"
-          placeholder="Digite um valor..."
+          placeholder="Valor..."
           @keydown="handleKeydown"
           class="value-input"
         />
@@ -399,13 +423,11 @@ const traversalLabel = computed(() => {
         <button @click="randomTree" class="btn btn-random">🎲 Aleatória</button>
         <button @click="clearTree" class="btn btn-clear">🗑️ Limpar</button>
       </div>
-
-      <!-- Busca -->
       <div class="search-row">
         <input
           v-model.number="searchValue"
           type="number"
-          placeholder="Buscar valor..."
+          placeholder="Buscar..."
           class="value-input"
           :disabled="searchActive"
         />
@@ -420,8 +442,6 @@ const traversalLabel = computed(() => {
           ⏹️ Parar
         </button>
       </div>
-
-      <!-- Percurso -->
       <div class="traversal-controls">
         <select
           v-model="traversalType"
@@ -447,14 +467,25 @@ const traversalLabel = computed(() => {
           ⏹️ Parar
         </button>
       </div>
+      <!-- Zoom controls -->
+      <div class="zoom-controls">
+        <button @click="zoomOut" class="btn btn-zoom" title="Zoom out">
+          🔍➖
+        </button>
+        <span class="zoom-level">{{ Math.round(zoomLevel * 100) }}%</span>
+        <button @click="zoomIn" class="btn btn-zoom" title="Zoom in">
+          🔍➕
+        </button>
+        <button @click="resetZoom" class="btn btn-zoom" title="Reset zoom">
+          ↺
+        </button>
+      </div>
     </div>
 
-    <!-- Feedback -->
     <div v-if="message" :class="['message', `msg-${messageType}`]">
       {{ message }}
     </div>
 
-    <!-- Sequência de percurso -->
     <div
       v-if="
         traversalActive || (traversalSequence.length > 0 && !traversalActive)
@@ -468,69 +499,73 @@ const traversalLabel = computed(() => {
           :key="idx"
           class="seq-item"
           :class="{ 'seq-active': val === activeTraversalNode }"
+          >{{ val }}</span
         >
-          {{ val }}
-        </span>
       </span>
     </div>
 
-    <!-- Área da árvore -->
-    <div class="tree-area">
+    <div
+      ref="svgContainer"
+      class="tree-area"
+      @wheel="onWheel"
+      @mousedown="onMouseDown"
+      :style="{ cursor: isPanning ? 'grabbing' : 'grab' }"
+    >
       <div v-if="nodeList.length === 0" class="empty-tree">
-        🌱 A árvore está vazia. Insira valores!
+        🌱 Árvore vazia. Insira valores!
       </div>
       <svg
         v-else
         :viewBox="svgViewBox"
-        :style="{ height: svgHeight + 'px' }"
         class="tree-svg"
+        :style="{ height: svgContainerHeight + 'px' }"
       >
-        <!-- Arestas -->
-        <line
-          v-for="edge in layout.edges"
-          :key="'edge-' + edge.childValue"
-          :x1="edge.x1"
-          :y1="edge.y1"
-          :x2="edge.x2"
-          :y2="edge.y2"
-          :class="[
-            'tree-edge',
-            getEdgeAnimClass(edge.childValue),
-            { 'edge-search': isSearchEdge(edge.childValue) },
-          ]"
-        />
-
-        <!-- Nós -->
-        <g
-          v-for="node in nodeList"
-          :key="'node-' + node.value"
-          :transform="`translate(${node.x}, ${node.y})`"
-          class="node-position"
-        >
-          <g :class="['node-inner', getNodeAnimClass(node.value)]">
-            <circle
-              r="24"
-              class="node-circle"
-              :class="{
-                'circle-new': isNodeNew(node.value),
-                'circle-removing': isNodeRemoving(node.value),
-                'circle-traversal': isTraversalActive(node.value),
-                'circle-search': isSearchHighlighted(node.value),
-              }"
-            />
-            <text
-              class="node-text"
-              text-anchor="middle"
-              dominant-baseline="central"
-            >
-              {{ node.value }}
-            </text>
+        <g :transform="`translate(${panX}, ${panY}) scale(${zoomLevel})`">
+          <!-- Arestas -->
+          <line
+            v-for="edge in layout.edges"
+            :key="'e-' + edge.childValue"
+            :x1="edge.x1"
+            :y1="edge.y1"
+            :x2="edge.x2"
+            :y2="edge.y2"
+            :class="[
+              'tree-edge',
+              edgeAnimClass(edge.childValue),
+              { 'edge-search': isSearchEdge(edge.childValue) },
+            ]"
+          />
+          <!-- Nós -->
+          <g
+            v-for="node in nodeList"
+            :key="'n-' + node.value"
+            :transform="`translate(${node.x}, ${node.y})`"
+            class="node-position"
+          >
+            <g :class="['node-inner', nodeAnimClass(node.value)]">
+              <circle
+                r="24"
+                class="node-circle"
+                :class="{
+                  'circle-new': isNodeNew(node.value),
+                  'circle-removing': isNodeRemoving(node.value),
+                  'circle-traversal': isTraversalActiveNode(node.value),
+                  'circle-search': isSearchHighlightedNode(node.value),
+                }"
+              />
+              <text
+                class="node-text"
+                text-anchor="middle"
+                dominant-baseline="central"
+              >
+                {{ node.value }}
+              </text>
+            </g>
           </g>
         </g>
       </svg>
     </div>
 
-    <!-- Legenda -->
     <div class="legend">
       <span><span class="dot dot-new"></span> Novo</span>
       <span><span class="dot dot-removing"></span> Removendo</span>
@@ -543,48 +578,45 @@ const traversalLabel = computed(() => {
 
 <style scoped>
 .visualizer {
-  max-width: 1200px;
+  max-width: 1300px;
   margin: 0 auto;
   padding: 16px 20px;
 }
-
 h2 {
   text-align: center;
   color: #2c3e50;
-  margin-bottom: 16px;
+  margin-bottom: 12px;
 }
 
-/* Controles */
 .controls {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 8px;
   justify-content: center;
-  margin-bottom: 12px;
+  margin-bottom: 10px;
 }
 .input-row,
 .btn-row,
 .traversal-controls,
-.search-row {
+.search-row,
+.zoom-controls {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   align-items: center;
 }
 .value-input {
-  width: 140px;
-  padding: 10px 14px;
-  font-size: 16px;
+  width: 120px;
+  padding: 8px 12px;
+  font-size: 15px;
   border: 2px solid #ddd;
   border-radius: 8px;
   outline: none;
-  transition: border-color 0.3s;
 }
 .value-input:focus {
   border-color: #4a90d9;
 }
-
 .traversal-select {
-  padding: 10px 14px;
+  padding: 8px 12px;
   font-size: 14px;
   border: 2px solid #ddd;
   border-radius: 8px;
@@ -592,8 +624,8 @@ h2 {
 }
 
 .btn {
-  padding: 10px 18px;
-  font-size: 14px;
+  padding: 8px 16px;
+  font-size: 13px;
   font-weight: 600;
   border: none;
   border-radius: 8px;
@@ -606,8 +638,8 @@ h2 {
   cursor: not-allowed;
 }
 .btn:hover:not(:disabled) {
-  transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.15);
 }
 .btn:active:not(:disabled) {
   transform: translateY(0);
@@ -636,15 +668,28 @@ h2 {
   background: linear-gradient(135deg, #f6d365, #fda085);
   color: #4a2c2c;
 }
+.btn-zoom {
+  background: #6c757d;
+  color: white;
+  padding: 6px 10px;
+  font-size: 14px;
+}
 
-/* Mensagem */
+.zoom-level {
+  font-size: 13px;
+  font-weight: 600;
+  min-width: 40px;
+  text-align: center;
+  color: #2c3e50;
+}
+
 .message {
   text-align: center;
-  padding: 10px 20px;
+  padding: 8px 16px;
   border-radius: 8px;
-  margin-bottom: 12px;
+  margin-bottom: 10px;
   font-weight: 500;
-  animation: fadeSlide 0.3s ease;
+  animation: fadeSlide 0.3s;
 }
 .msg-success {
   background: #d4edda;
@@ -662,25 +707,24 @@ h2 {
   border: 1px solid #bee5eb;
 }
 
-/* Sequência de percurso */
 .traversal-sequence {
   text-align: center;
-  margin: 12px 0;
-  font-size: 16px;
+  margin: 8px 0;
+  font-size: 15px;
   color: #2c3e50;
 }
 .seq-label {
   font-weight: 600;
-  margin-right: 8px;
+  margin-right: 6px;
 }
 .seq-values {
   display: inline-flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 4px;
 }
 .seq-item {
   background: #e9ecef;
-  padding: 4px 10px;
+  padding: 3px 10px;
   border-radius: 20px;
   font-weight: 500;
   transition: all 0.3s;
@@ -688,36 +732,35 @@ h2 {
 }
 .seq-active {
   background: #ffd700;
-  color: #000;
   border-color: #f39c12;
-  transform: scale(1.15);
+  transform: scale(1.1);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
 }
 
-/* Área da árvore */
 .tree-area {
   background: #f8f9fa;
   border-radius: 16px;
   border: 2px solid #dee2e6;
-  overflow: auto;
-  min-height: 300px;
-  max-height: 600px;
+  overflow: hidden;
+  position: relative;
+  height: 500px;
+  max-height: 70vh;
   box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.05);
 }
 .tree-svg {
   width: 100%;
+  height: 100%;
   display: block;
 }
 .empty-tree {
   display: flex;
   align-items: center;
   justify-content: center;
-  height: 200px;
+  height: 100%;
   font-size: 1.2rem;
   color: #6c757d;
 }
 
-/* Arestas */
 .tree-edge {
   stroke: #adb5bd;
   stroke-width: 2.5;
@@ -727,46 +770,39 @@ h2 {
     stroke 0.3s;
 }
 .tree-edge.edge-enter {
-  animation: fadeIn 0.5s ease-out;
+  animation: fadeIn 0.5s;
 }
 .tree-edge.edge-exit {
-  animation: fadeOut 0.4s ease-in forwards;
+  animation: fadeOut 0.4s forwards;
 }
-
-/* Destaque de aresta na busca */
 .tree-edge.edge-search {
   stroke: #f39c12;
   stroke-width: 3.5;
   filter: drop-shadow(0 0 4px rgba(243, 156, 18, 0.6));
 }
 
-/* Nós – posicionamento (transição suave ao reposicionar) */
 .node-position {
   transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1);
 }
-
-/* Nós – animações de entrada/saída */
 .node-inner {
   transform-box: fill-box;
   transform-origin: center;
 }
 .node-inner.node-enter {
-  animation: popIn 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275) both;
+  animation: popIn 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275);
 }
 .node-inner.node-exit {
-  animation: popOut 0.4s ease-in forwards;
+  animation: popOut 0.4s forwards;
   pointer-events: none;
 }
 
-/* Círculo */
 .node-circle {
   fill: #4a90d9;
   stroke: #357abd;
   stroke-width: 3;
   transition:
     fill 0.4s,
-    stroke 0.4s,
-    stroke-dasharray 0.3s;
+    stroke 0.4s;
 }
 .circle-new {
   fill: #43e97b;
@@ -776,15 +812,11 @@ h2 {
   fill: #f5576c;
   stroke: #e74c3c;
 }
-
-/* Destaque de percurso (pulsante) */
 .circle-traversal {
   fill: #ffd700;
   stroke: #f39c12;
   animation: pulse 0.8s infinite alternate;
 }
-
-/* Destaque de busca (cor laranja suave) */
 .circle-search {
   fill: #fda085;
   stroke: #e67e22;
@@ -801,17 +833,6 @@ h2 {
     filter: drop-shadow(0 0 12px rgba(255, 215, 0, 0.9));
   }
 }
-
-/* Texto */
-.node-text {
-  fill: white;
-  font-size: 15px;
-  font-weight: 700;
-  pointer-events: none;
-  user-select: none;
-}
-
-/* Keyframes */
 @keyframes popIn {
   0% {
     transform: scale(0);
@@ -863,12 +884,19 @@ h2 {
   }
 }
 
-/* Legenda */
+.node-text {
+  fill: white;
+  font-size: 15px;
+  font-weight: 700;
+  pointer-events: none;
+  user-select: none;
+}
+
 .legend {
   display: flex;
-  gap: 20px;
+  gap: 16px;
   justify-content: center;
-  margin-top: 14px;
+  margin-top: 12px;
   font-size: 13px;
   color: #495057;
 }
@@ -877,7 +905,7 @@ h2 {
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  margin-right: 5px;
+  margin-right: 4px;
   vertical-align: middle;
   border: 2px solid;
 }
@@ -900,19 +928,5 @@ h2 {
 .dot-normal {
   background: #4a90d9;
   border-color: #357abd;
-}
-
-/* Scrollbar */
-.tree-area::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-.tree-area::-webkit-scrollbar-track {
-  background: #f1f3f5;
-  border-radius: 4px;
-}
-.tree-area::-webkit-scrollbar-thumb {
-  background: #ced4da;
-  border-radius: 4px;
 }
 </style>
